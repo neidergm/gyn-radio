@@ -16,6 +16,7 @@ const App = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
+  const isAppendingRef = useRef(false);
   const mediaSourceRef = useRef<MediaSource | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
 
@@ -79,23 +80,46 @@ const App = () => {
 
   // --- LÓGICA DEL OYENTE (LISTENER) ---
 
+  // Reemplaza tu función processQueue actual con esta:
   const processQueue = () => {
-    // Condiciones de guardia para no romper el buffer
     if (
       !sourceBufferRef.current ||
-      sourceBufferRef.current.updating || // Si ya está ocupado escribiendo, esperamos
+      sourceBufferRef.current.updating ||
       audioQueueRef.current.length === 0
     ) return;
 
-    if (mediaSourceRef.current && mediaSourceRef.current.readyState !== 'open') return;
+    if (mediaSourceRef.current?.readyState !== 'open') return;
 
-    const chunk = audioQueueRef.current.shift(); // Sacar el siguiente trozo
+    const chunk = audioQueueRef.current[0]; // Miramos el primero sin sacarlo aún
 
-    if (chunk) {
-      try {
-        sourceBufferRef.current.appendBuffer(chunk);
-      } catch (e) {
-        console.error("Error agregando al buffer:", e);
+    try {
+      // Intentamos añadir el buffer
+      isAppendingRef.current = true;
+      sourceBufferRef.current.appendBuffer(chunk);
+
+      // Si tuvo éxito, sacamos el elemento de la cola
+      audioQueueRef.current.shift();
+    } catch (err: any) {
+      // ERROR: QUOTA_EXCEEDED_ERR (El buffer está lleno)
+      if (err.name === 'QuotaExceededError') {
+        console.warn("Buffer lleno. Limpiando audio antiguo...");
+
+        const sb = sourceBufferRef.current;
+        // Borrar todo lo que sea más viejo que "tiempo actual - 10 segundos"
+        if (audioElRef.current && !sb.updating) {
+          const currentTime = audioElRef.current.currentTime;
+          // Solo borrar si hay suficiente audio acumulado (ej. más de 20 seg)
+          if (currentTime > 20) {
+            // Borramos desde el principio hasta 10 segundos atrás del actual
+            sb.remove(0, currentTime - 10);
+            // NOTA: El appendBuffer fallido se reintentará en el próximo ciclo
+            // porque NO hicimos shift() del chunk.
+          }
+        }
+      } else {
+        console.error("Error crítico añadiendo al buffer:", err);
+        // Si el error no es de espacio, descartamos el chunk corrupto para no atascar
+        audioQueueRef.current.shift();
       }
     }
   };
@@ -126,18 +150,18 @@ const App = () => {
       // 3. Crear SourceBuffer
       try {
         const sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs=opus');
-        sourceBuffer.mode = 'sequence';
+        sourceBuffer.mode = 'sequence'; // CRÍTICO: Asegura que los trozos se peguen uno tras otro
         sourceBufferRef.current = sourceBuffer;
 
         sourceBuffer.addEventListener('updateend', () => {
-          // Cuando termine de escribir un trozo, procesamos el siguiente
+          // Cuando termina de escribir (o de borrar), procesamos el siguiente
+          isAppendingRef.current = false;
           processQueue();
         });
 
         sourceBuffer.addEventListener('error', (e) => {
-          console.error("Error en SourceBuffer", e);
+          console.error("Error interno del SourceBuffer:", e);
         });
-
       } catch (e) {
         console.error("Error creando SourceBuffer. MimeType no soportado?", e);
       }
@@ -168,7 +192,7 @@ const App = () => {
   return (
     <div style={{ padding: '2rem', fontFamily: 'sans-serif', textAlign: 'center', maxWidth: '600px', margin: '0 auto' }}>
       <h1 style={{ color: '#333' }}>📻 GYN RADIO</h1>
-      <div style={{ padding: '10px', background: '#f5f5f5', borderRadius: '5px', marginBottom: '20px' }}>
+      <div style={{ padding: '10px', borderRadius: '5px', marginBottom: '20px' }}>
         <strong>Estado:</strong> {status}
       </div>
 
