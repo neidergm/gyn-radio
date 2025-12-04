@@ -11,7 +11,6 @@ const App = () => {
 
   // Refs para mantener el estado sin re-renderizar
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
   const isAppendingRef = useRef(false);
@@ -109,7 +108,7 @@ const App = () => {
     // Crear elemento de audio invisible (o visible si quieres controles)
     const audioEl = new Audio(audioUrl);
     audioRef.current = audioEl; // Guardar referencia para evitar Garbage Collection
-    audioEl.play().catch(e => console.log("Click para reproducir (política navegador)"));
+    audioEl.play().catch(() => console.log("Click para reproducir (política navegador)"));
 
     mediaSource.addEventListener('sourceopen', () => {
       // 2. Crear SourceBuffer cuando esté listo
@@ -151,7 +150,7 @@ const App = () => {
 
   return (
     <div style={{ padding: '2rem', fontFamily: 'sans-serif', textAlign: 'center' }}>
-      <h1>📻 Mi Radio Web Personal</h1>
+      <h1>GYN RADIO</h1>
       <h3>Estado: {status}</h3>
 
       <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', marginTop: '20px' }}>
