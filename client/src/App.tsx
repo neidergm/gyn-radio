@@ -1,7 +1,10 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import io, { Socket } from 'socket.io-client';
 
+// Configuración de la URL del backend
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+
+// Inicializamos el socket fuera del componente para evitar reconexiones múltiples
 const socket: Socket = io(BACKEND_URL);
 
 const App = () => {
@@ -9,59 +12,56 @@ const App = () => {
   const [isListening, setIsListening] = useState(false);
   const [status, setStatus] = useState('Inactivo');
 
-  // Refs para mantener el estado sin re-renderizar
+  // Refs para mantener el estado mutable
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
-  const isAppendingRef = useRef(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaSourceRef = useRef<MediaSource | null>(null);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
 
   // --- LÓGICA DEL EMISOR (BROADCASTER) ---
   const startBroadcast = async () => {
     try {
-      // 1. Pedimos captura de pantalla con audio
-      // NOTA: Chrome exige pedir 'video' para darte la opción de compartir audio de pestaña
+      // 1. Captura (Pide video para habilitar la opción de audio)
       const stream = await navigator.mediaDevices.getDisplayMedia({
         audio: true,
         video: true
       });
 
-      // 2. Importante: Detenemos el video inmediatamente para ahorrar ancho de banda
-      // Solo nos interesa el audio track
+      // 2. Detener video inmediatamente para ahorrar ancho de banda
       stream.getVideoTracks().forEach(track => track.stop());
 
-      // 3. Configuramos el grabador
-      // Usamos el codec Opus que es estándar y eficiente
+      // 3. Configurar Grabador
       const options = { mimeType: 'audio/webm; codecs=opus' };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        console.error('Este navegador no soporta audio/webm opus');
+        alert('Tu navegador no soporta audio/webm; codecs=opus');
         return;
       }
 
       const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
 
-      // 4. Cada vez que haya datos (cada 500ms), enviarlos al server
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
+          // Enviamos el blob al servidor
           socket.emit('radio-stream', event.data);
         }
       };
 
-      // 5. Iniciar grabación enviando trozos cada 100ms para menor latencia
-      mediaRecorder.start(100);
-      setIsBroadcasting(true);
-      setStatus('Transmitiendo en vivo 🔴');
-
-      // Manejar cuando el usuario deja de compartir desde el navegador
+      // Si el usuario deja de compartir desde la barra del navegador
       stream.getAudioTracks()[0].onended = () => {
         stopBroadcast();
       };
 
+      // 4. AJUSTE CRÍTICO: Chunks de 1 segundo (1000ms) para estabilidad
+      mediaRecorder.start(1000);
+
+      setIsBroadcasting(true);
+      setStatus('Transmitiendo en vivo 🔴');
+
     } catch (err) {
-      console.error("Error al compartir:", err);
-      setStatus('Error al acceder al audio');
+      console.error("Error al iniciar transmisión:", err);
+      setStatus('Cancelado o Error de permisos');
     }
   };
 
@@ -69,124 +69,160 @@ const App = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
+
+    // AJUSTE CRÍTICO: Avisar al server que borre el header viejo
+    socket.emit('stream-ended');
+
     setIsBroadcasting(false);
     setStatus('Transmisión finalizada');
   };
 
   // --- LÓGICA DEL OYENTE (LISTENER) ---
 
-  // Función auxiliar para procesar la cola de audio
   const processQueue = () => {
-    if (!sourceBufferRef.current || isAppendingRef.current || audioQueueRef.current.length === 0) return;
+    // Condiciones de guardia para no romper el buffer
+    if (
+      !sourceBufferRef.current ||
+      sourceBufferRef.current.updating || // Si ya está ocupado escribiendo, esperamos
+      audioQueueRef.current.length === 0
+    ) return;
 
-    // Verificar que el MediaSource esté abierto
-    if (mediaSourceRef.current && mediaSourceRef.current.readyState !== 'open') {
-      return;
-    }
+    if (mediaSourceRef.current && mediaSourceRef.current.readyState !== 'open') return;
 
-    const chunk = audioQueueRef.current.shift(); // Sacar el primer elemento
+    const chunk = audioQueueRef.current.shift(); // Sacar el siguiente trozo
+
     if (chunk) {
       try {
-        isAppendingRef.current = true;
         sourceBufferRef.current.appendBuffer(chunk);
       } catch (e) {
-        console.error("Error en buffer:", e);
+        console.error("Error agregando al buffer:", e);
       }
     }
   };
 
   const startListening = () => {
     setIsListening(true);
-    setStatus('Conectando a la radio... 📻');
+    setStatus('Sintonizando... 📻');
 
-    // 1. Crear MediaSource
-    // 1. Crear MediaSource
+    // 1. Crear nueva instancia de MediaSource
     const mediaSource = new MediaSource();
     mediaSourceRef.current = mediaSource;
-    const audioUrl = URL.createObjectURL(mediaSource);
 
-    // Crear elemento de audio invisible (o visible si quieres controles)
-    const audioEl = new Audio(audioUrl);
-    audioRef.current = audioEl; // Guardar referencia para evitar Garbage Collection
-    audioEl.play().catch(() => console.log("Click para reproducir (política navegador)"));
+    // 2. Crear elemento de audio
+    const audioEl = new Audio();
+    audioEl.src = URL.createObjectURL(mediaSource);
+    audioEl.controls = true; // Útil para depurar (volumen, etc)
+    audioElRef.current = audioEl;
 
-    mediaSource.addEventListener('sourceopen', () => {
-      // 2. Crear SourceBuffer cuando esté listo
-      // Debe coincidir EXACTAMENTE con el mimeType del emisor
-      const sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs=opus');
-      sourceBufferRef.current = sourceBuffer;
-      sourceBuffer.mode = 'sequence'; // Importante para streaming
-
-      // Cuando termine de añadir un trozo, intentar añadir el siguiente
-      sourceBuffer.addEventListener('updateend', () => {
-        isAppendingRef.current = false;
-        processQueue();
-      });
-
-      setStatus('Escuchando 🎧');
+    // Intentar reproducir (el navegador puede bloquearlo si no hubo interacción previa)
+    audioEl.play().then(() => {
+      setStatus('Reproduciendo 🎧');
+    }).catch(e => {
+      console.warn("Autoplay bloqueado, el usuario debe interactuar", e);
+      setStatus('Haz click en la página para escuchar');
     });
 
-    // 3. Escuchar datos del socket
+    mediaSource.addEventListener('sourceopen', () => {
+      // 3. Crear SourceBuffer
+      try {
+        const sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs=opus');
+        sourceBuffer.mode = 'sequence';
+        sourceBufferRef.current = sourceBuffer;
+
+        sourceBuffer.addEventListener('updateend', () => {
+          // Cuando termine de escribir un trozo, procesamos el siguiente
+          processQueue();
+        });
+
+        sourceBuffer.addEventListener('error', (e) => {
+          console.error("Error en SourceBuffer", e);
+        });
+
+      } catch (e) {
+        console.error("Error creando SourceBuffer. MimeType no soportado?", e);
+      }
+    });
+
+    // 4. Escuchar eventos del socket
     socket.on('radio-stream', async (data: Blob | ArrayBuffer) => {
-      console.log('Datos recibidos:', data);
       let arrayBuffer: ArrayBuffer;
 
       if (data instanceof ArrayBuffer) {
         arrayBuffer = data;
-      } else if (data instanceof Blob) {
-        arrayBuffer = await data.arrayBuffer();
       } else {
-        console.error("Tipo de dato desconocido recibido:", data);
-        return;
+        arrayBuffer = await (data as Blob).arrayBuffer();
       }
 
-      // Añadir a la cola
       audioQueueRef.current.push(arrayBuffer);
-
-      // Intentar procesar cola
       processQueue();
     });
   };
 
+  // Limpieza al cerrar componente
+  useEffect(() => {
+    return () => {
+      socket.off('radio-stream');
+    };
+  }, []);
+
   return (
-    <div style={{ padding: '2rem', fontFamily: 'sans-serif', textAlign: 'center' }}>
-      <h1>GYN RADIO</h1>
-      <h3>Estado: {status}</h3>
+    <div style={{ padding: '2rem', fontFamily: 'sans-serif', textAlign: 'center', maxWidth: '600px', margin: '0 auto' }}>
+      <h1 style={{ color: '#333' }}>📻 GYN RADIO</h1>
+      <div style={{ padding: '10px', background: '#f5f5f5', borderRadius: '5px', marginBottom: '20px' }}>
+        <strong>Estado:</strong> {status}
+      </div>
 
-      <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', marginTop: '20px' }}>
+      <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', flexWrap: 'wrap' }}>
 
+        {/* PANEL DJ */}
         {!isListening && (
-          <div style={{ border: '1px solid #ccc', padding: '20px', borderRadius: '8px' }}>
-            <h2>Soy el DJ (Emisor)</h2>
+          <div style={{ border: '2px solid #e74c3c', padding: '20px', borderRadius: '10px', flex: 1, minWidth: '200px' }}>
+            <h2 style={{ color: '#e74c3c' }}>Modo DJ</h2>
+            <p style={{ fontSize: '0.9rem', color: '#666' }}>Transmite el audio de tu PC</p>
+
             {!isBroadcasting ? (
-              <button onClick={startBroadcast} style={{ padding: '10px 20px', fontSize: '16px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                Iniciar Transmisión
+              <button
+                onClick={startBroadcast}
+                style={{ padding: '12px 24px', fontSize: '16px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                🎙️ Iniciar Transmisión
               </button>
             ) : (
-              <button onClick={stopBroadcast} style={{ padding: '10px 20px', fontSize: '16px', background: '#333', color: 'white' }}>
-                Detener
+              <button
+                onClick={stopBroadcast}
+                style={{ padding: '12px 24px', fontSize: '16px', background: '#333', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
+              >
+                ⏹️ Detener
               </button>
             )}
-            <p style={{ fontSize: '12px', color: '#666' }}>Debes elegir la pestaña y marcar "Compartir audio"</p>
           </div>
         )}
 
+        {/* PANEL OYENTE */}
         {!isBroadcasting && (
-          <div style={{ border: '1px solid #ccc', padding: '20px', borderRadius: '8px' }}>
-            <h2>Soy Oyente</h2>
+          <div style={{ border: '2px solid #3498db', padding: '20px', borderRadius: '10px', flex: 1, minWidth: '200px' }}>
+            <h2 style={{ color: '#3498db' }}>Modo Oyente</h2>
+            <p style={{ fontSize: '0.9rem', color: '#666' }}>Escucha la transmisión en vivo</p>
+
             {!isListening ? (
-              <button onClick={startListening} style={{ padding: '10px 20px', fontSize: '16px', background: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                Sintonizar Radio
+              <button
+                onClick={startListening}
+                style={{ padding: '12px 24px', fontSize: '16px', background: '#3498db', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                🎧 Sintonizar
               </button>
             ) : (
-              <button disabled style={{ padding: '10px 20px', fontSize: '16px', background: '#2ecc71', color: 'white' }}>
-                Reproduciendo...
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                <span style={{ color: '#2ecc71', fontWeight: 'bold' }}>Conectado</span>
+                <button onClick={() => window.location.reload()} style={{ padding: '5px 10px', cursor: 'pointer' }}>Apagar</button>
+              </div>
             )}
           </div>
         )}
 
       </div>
+
+      <p style={{ marginTop: '2rem', fontSize: '0.8rem', color: '#aaa' }}>Backend: {BACKEND_URL}</p>
     </div>
   );
 };
