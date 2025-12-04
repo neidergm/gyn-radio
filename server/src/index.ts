@@ -4,8 +4,13 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 
 const PORT = process.env.PORT || 3000;
+const allowedOrigin = process.env.ALLOWED_CLIENT_URL || "http://localhost:5173";
+
 const app = express();
-app.use(cors());
+app.use(cors({
+    origin: allowedOrigin,
+    methods: ["GET", "POST"]
+}));
 
 // Creamos el servidor HTTP a partir de Express
 const httpServer = createServer(app);
@@ -15,7 +20,7 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
         // IMPORTANTE: Aquí pones la URL de tu frontend (Vite corre en 5173 por defecto)
-        origin: "http://localhost:5173",
+        origin: allowedOrigin,
         methods: ["GET", "POST"]
     }
 });
