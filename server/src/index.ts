@@ -2,18 +2,10 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import cors from 'cors';
-import * as mediasoup from "mediasoup";
-import type {
-    Router,
-    RouterRtpCodecCapability,
-    Worker as MSWorker,
-    Producer,
-    Consumer,
-    WebRtcTransport
-} from 'mediasoup/types';
+import mediasoup, { type types } from "mediasoup";
 
 interface CustomSocket extends Socket {
-    transports: WebRtcTransport[];
+    transports: types.WebRtcTransport[];
 }
 
 const app = express();
@@ -32,12 +24,12 @@ const io = new Server(httpServer, {
 });
 
 // --- Configuración Mediasoup ---
-let worker: MSWorker;
-let router: Router;
-let producer: Producer; // Guardaremos aquí al único locutor de la radio
-let consumers: Consumer[] = []; // Lista de oyentes
+let worker: types.Worker;
+let router: types.Router;
+let producer: types.Producer; // Guardaremos aquí al único locutor de la radio
+let consumers: types.Consumer[] = []; // Lista de oyentes
 
-const mediaCodecs: RouterRtpCodecCapability[] = [
+const mediaCodecs: types.RouterRtpCodecCapability[] = [
     {
         kind: 'audio',
         mimeType: 'audio/opus',
@@ -56,7 +48,7 @@ async function startMediasoup() {
 startMediasoup();
 
 // --- Funciones Helper ---
-async function createWebRtcTransport(callback: (data: any) => void) {
+async function createWebRtcTransport(callback: (data: unknown) => void) {
     try {
         const transport = await router.createWebRtcTransport({
             listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }], // Cambiar announcedIp a tu IP pública en producción
