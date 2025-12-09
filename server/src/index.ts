@@ -2,7 +2,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import cors from 'cors';
-import mediasoup, { type types } from "mediasoup";
+import * as mediasoup from "mediasoup";
+import type { types } from "mediasoup";
 
 interface CustomSocket extends Socket {
     transports: types.WebRtcTransport[];
@@ -58,7 +59,7 @@ async function createWebRtcTransport(callback: (data: unknown) => void) {
         });
 
         // Eventos obligatorios del transporte
-        transport.on('dtlsstatechange', dtlsState => {
+        transport.on('dtlsstatechange', (dtlsState: types.DtlsState) => {
             if (dtlsState === 'closed') transport.close();
         });
 
