@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  server:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      # Add other environment variables here or use env_file
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev # For development, uses nodemon if installed/configured
+    # For production use: command: npm start
