@@ -6,10 +6,11 @@ const ListenerPage = () => {
     const {
         status,
         joinAsListener,
+        stopListening,
         audioRef,
         isProducerAvailable
     } = useRadio();
-
+    console.log(status)
     const isListening = status === STATUS.JOINED_LISTENER;
 
     return (
@@ -40,11 +41,23 @@ const ListenerPage = () => {
             <Box w="full" pt={4}>
                 {isListening ?
                     (
-                        <audio
-                            ref={audioRef}
-                            controls={isListening}
-                            style={{ display: isListening ? 'block' : 'none', width: '100%' }}
-                        />
+                        <>
+                            <audio
+                                ref={audioRef}
+                                style={{ display: 'none' }}
+                            />
+                            <Button
+                                w="full"
+                                size="lg"
+                                rounded="full"
+                                onClick={stopListening}
+                                h={14}
+                                fontSize="lg"
+                                colorScheme="red"
+                            >
+                                Stop Listening
+                            </Button>
+                        </>
                     ) : (
                         <Button
                             w="full"

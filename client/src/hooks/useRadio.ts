@@ -145,13 +145,15 @@ export const useRadio = () => {
 
     const joinAsListener = () => {
         if (!socketRef.current) return;
-
+        console.log(socketRef.current)
         setStatus(STATUS.JOINING_LISTENER);
 
         socketRef.current.emit('getRouterRtpCapabilities', async (rtpCapabilities: any) => {
+            console.log({ rtpCapabilities })
             await loadDevice(rtpCapabilities);
-
+            console.log(deviceRef.current)
             socketRef.current?.emit('getActiveProducer', async ({ producerId }: any) => {
+                console.log(producerId)
                 if (producerId) {
                     await consumeAudio(producerId);
                 } else {
@@ -164,7 +166,7 @@ export const useRadio = () => {
 
     const consumeAudio = async (producerId: string) => {
         if (!deviceRef.current || !socketRef.current) return;
-
+        console.log("Consumiendo audio")
         socketRef.current.emit('createTransport', {}, async ({ params }: any) => {
 
             consumerTransportRef.current = deviceRef.current!.createRecvTransport(params);
@@ -179,10 +181,12 @@ export const useRadio = () => {
 
             const { rtpCapabilities } = deviceRef.current!;
 
+            console.log({ rtpCapabilities })
             socketRef.current?.emit('consume', {
                 transportId: consumerTransportRef.current.id,
                 rtpCapabilities
             }, async ({ params }: any) => {
+                console.log({ params })
                 if (params.error) {
                     console.error('No se puede consumir', params.error);
                     return;
@@ -212,6 +216,20 @@ export const useRadio = () => {
         });
     };
 
+    const stopListening = () => {
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.srcObject = null;
+        }
+
+        if (consumerTransportRef.current) {
+            consumerTransportRef.current.close();
+            consumerTransportRef.current = null;
+        }
+
+        setStatus(isProducerAvailable ? STATUS.AVAILABLE_PRODUCER : STATUS.CONNECTED);
+    };
+
     return {
         status,
         isConnected,
@@ -219,6 +237,7 @@ export const useRadio = () => {
         isProducerAvailable,
         audioRef,
         joinAsBroadcaster,
-        joinAsListener
+        joinAsListener,
+        stopListening
     };
 };

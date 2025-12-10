@@ -1,193 +1,130 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
-import cors from 'cors';
-import {
-    createWorker
-} from "mediasoup";
-import type {
-    Worker as MSWorker,
-    Router,
-    WebRtcTransport,
-    Producer,
-    Consumer,
-    DtlsState,
-    RouterRtpCodecCapability,
-} from "mediasoup/types";
-
-interface CustomSocket extends Socket {
-    transports: WebRtcTransport[];
-}
+import mediasoup from 'mediasoup';
+import type { RouterRtpCodecCapability, WebRtcTransport, Producer, Consumer, Router, Worker } from 'mediasoup/types';
 
 const app = express();
 const httpServer = createServer(app);
-
-const ALLOWED_ORIGINS = process.env.CLIENT_URL || "http://localhost:5173";
-const PORT = process.env.PORT || 3000;
-
-app.use(cors({ origin: ALLOWED_ORIGINS, methods: ["GET", "POST"] }));
-
 const io = new Server(httpServer, {
-    cors: {
-        origin: ALLOWED_ORIGINS,
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*" }
 });
 
-// --- Configuración Mediasoup ---
-let worker: MSWorker;
+// --- Configuración de Mediasoup ---
+let worker: Worker;
 let router: Router;
-let producer: Producer; // Guardaremos aquí al único locutor de la radio
-let consumers: Consumer[] = []; // Lista de oyentes
+let producer: Producer | null = null; // Solo permitimos un DJ a la vez para este demo
 
-const mediaCodecs: RouterRtpCodecCapability[] = [
-    {
-        kind: 'audio',
-        mimeType: 'audio/opus',
-        clockRate: 48000,
-        channels: 2
-    }
-];
+const mediaCodecs: RouterRtpCodecCapability[] = [{
+    kind: 'audio',
+    mimeType: 'audio/opus',
+    clockRate: 48000,
+    channels: 2 // Stereo es importante para audio del sistema
+}];
 
-async function startMediasoup() {
-    worker = await createWorker();
+// Inicialización
+async function runMediasoup() {
+    worker = await mediasoup.createWorker({
+        logLevel: 'warn',
+    });
 
     router = await worker.createRouter({ mediaCodecs });
-    console.log('Mediasoup Worker y Router iniciados');
+    console.log("🚀 Mediasoup Worker & Router iniciados");
 }
+runMediasoup();
 
-startMediasoup();
+// --- Lógica de Sockets ---
+io.on('connection', (socket: Socket) => {
+    console.log('Cliente conectado:', socket.id);
 
-// --- Funciones Helper ---
-async function createWebRtcTransport(callback: (data: unknown) => void) {
-    try {
-        const transport = await router.createWebRtcTransport({
-            listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }], // Cambiar announcedIp a tu IP pública en producción
-            enableUdp: true,
-            enableTcp: true,
-            preferUdp: true,
-        });
+    let transport: WebRtcTransport;
+    let consumer: Consumer;
 
-        // Eventos obligatorios del transporte
-        transport.on('dtlsstatechange', (dtlsState: DtlsState) => {
-            if (dtlsState === 'closed') transport.close();
-        });
+    // 1. Enviar capacidades del Router
+    socket.on('join', (callback) => {
+        callback(router.rtpCapabilities);
+    });
 
-        transport.on('@close', () => {
-            console.log('Transporte cerrado');
-        });
+    // 2. Crear Transporte (Para DJ o Listener)
+    socket.on('createWebRtcTransport', async (callback) => {
+        try {
+            transport = await router.createWebRtcTransport({
+                listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }], // ¡CAMBIAR EN PROD!
+                enableUdp: true,
+                enableTcp: true,
+            });
 
-        // Enviamos los datos necesarios al cliente para que cree su transporte local
-        callback({
-            params: {
+            callback({
                 id: transport.id,
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
-            }
+            });
+        } catch (error) {
+            console.error(error);
+            callback({ error: (error as Error).message });
+        }
+    });
+
+    // 3. Conectar Transporte (DTLS)
+    socket.on('connectTransport', async ({ dtlsParameters }) => {
+        await transport.connect({ dtlsParameters });
+    });
+
+    // --- EVENTOS DEL DJ ---
+    socket.on('produce', async ({ kind, rtpParameters }, callback) => {
+        // Si ya hay un DJ, podrías rechazar o reemplazar. Aquí reemplazamos.
+        if (producer) {
+            producer.close();
+        }
+
+        producer = await transport.produce({ kind, rtpParameters });
+
+        console.log(`🎵 Nuevo DJ transmitiendo ID: ${producer.id}`);
+
+        // Avisar a todos que hay música
+        socket.broadcast.emit('newProducer');
+
+        producer.on('transportclose', () => {
+            console.log('DJ desconectado');
+            producer = null;
         });
 
-        return transport;
-    } catch (error: any) {
-        console.error(error);
-        callback({ error: error.message });
-    }
-}
-
-// --- Socket.io Signaling ---
-io.on('connection', (originalSocket) => {
-    const socket = originalSocket as CustomSocket;
-    console.log('Usuario conectado:', socket.id);
-
-    // 1. Enviar RTP Capabilities al cliente (bajo demanda)
-    socket.on('getRouterRtpCapabilities', (callback) => {
-        callback(router.rtpCapabilities);
+        callback({ id: producer.id });
     });
 
-    // 2. Verificar si ya hay un productor activo
-    socket.on('getActiveProducer', (callback) => {
-        if (producer) {
-            callback({ producerId: producer.id });
-        } else {
-            callback({});
-        }
-    });
-
-    // 3. Crear Transporte (tanto para enviar como para recibir)
-    socket.on('createTransport', async (data, callback) => {
-        const transport = await createWebRtcTransport(callback);
-        // Guardamos referencia temporal en el socket
-        if (!socket.transports) socket.transports = [];
-        if (transport) {
-            socket.transports.push(transport);
-        }
-    });
-
-    // 4. Conectar Transporte (DTLS Handshake)
-    socket.on('connectTransport', async ({ transportId, dtlsParameters }) => {
-        const transport = socket.transports.find(t => t.id === transportId);
-        if (transport) await transport.connect({ dtlsParameters });
-    });
-
-    // 5. PRODUCIR (Solo el Broadcaster llama esto)
-    socket.on('produce', async ({ transportId, kind, rtpParameters }, callback) => {
-        const transport = socket.transports.find(t => t.id === transportId);
-        if (transport) {
-            producer = await transport.produce({ kind, rtpParameters });
-
-            producer.on('transportclose', () => {
-                producer.close();
-                socket.broadcast.emit('producerClosed');
-            });
-
-            console.log('Nuevo Productor de Audio activo');
-            callback({ id: producer.id });
-
-            // Avisar a todos los clientes que hay una nueva radio sonando
-            socket.broadcast.emit('newProducer', { producerId: producer.id });
-        }
-    });
-
-    // 6. CONSUMIR (Los oyentes llaman esto)
-    socket.on('consume', async ({ transportId, rtpCapabilities }, callback) => {
+    // --- EVENTOS DEL OYENTE ---
+    socket.on('consume', async ({ rtpCapabilities }, callback) => {
         try {
-            if (!router.canConsume({ producerId: producer.id, rtpCapabilities })) {
-                return callback({ error: 'No se puede consumir' });
+            if (!router.canConsume({ producerId: producer?.id as string, rtpCapabilities })) {
+                return callback({ error: "No se puede consumir" });
             }
 
-            const transport = socket.transports.find(t => t.id === transportId);
+            if (!producer) return callback({ error: "No hay DJ activo" });
 
-            if (!transport) {
-                return callback({ error: 'Transporte no encontrado' });
-            }
-
-            const consumer = await transport.consume({
+            consumer = await transport.consume({
                 producerId: producer.id,
                 rtpCapabilities,
-                paused: true, // Iniciar pausado es buena práctica
+                paused: true, // Siempre iniciar pausado
             });
-
-            consumers.push(consumer);
 
             callback({
-                params: {
-                    id: consumer.id,
-                    producerId: producer.id,
-                    kind: consumer.kind,
-                    rtpParameters: consumer.rtpParameters,
-                }
+                id: consumer.id,
+                producerId: producer.id,
+                kind: consumer.kind,
+                rtpParameters: consumer.rtpParameters,
             });
 
-            // Una vez configurado en cliente, reanudamos
-            await consumer.resume();
-
-        } catch (error: any) {
-            console.error(error);
-            callback({ error: error.message });
+        } catch (error) {
+            console.error("Error consumiendo", error);
         }
+    });
+
+    socket.on('resume', async (callback) => {
+        if (consumer) await consumer.resume();
+        callback();
     });
 });
 
-httpServer.listen(PORT, () => {
-    console.log(`Servidor escuchando en puerto ${PORT}`);
-});
+const PORT = 3000;
+httpServer.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
