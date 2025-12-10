@@ -3,11 +3,23 @@ import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import mediasoup from 'mediasoup';
 import type { RouterRtpCodecCapability, WebRtcTransport, Producer, Consumer, Router, Worker } from 'mediasoup/types';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
+
+const PORT = process.env.PORT || 3000;
+const ALLOWED_ORIGINS = process.env.ALLOWED_CLIENT_URL || "*";
+const LISTEN_IP = process.env.LISTEN_IP || "0.0.0.0";
+const ANNOUNCED_IP = process.env.ANNOUNCED_IP || "127.0.0.1";
+
 const io = new Server(httpServer, {
-    cors: { origin: "*" }
+    cors: {
+        origin: ALLOWED_ORIGINS,
+        methods: ["GET", "POST"],
+    }
 });
 
 // --- Configuración de Mediasoup ---
@@ -49,7 +61,7 @@ io.on('connection', (socket: Socket) => {
     socket.on('createWebRtcTransport', async (callback) => {
         try {
             transport = await router.createWebRtcTransport({
-                listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }], // ¡CAMBIAR EN PROD!
+                listenIps: [{ ip: LISTEN_IP, announcedIp: ANNOUNCED_IP }],
                 enableUdp: true,
                 enableTcp: true,
             });
@@ -126,5 +138,4 @@ io.on('connection', (socket: Socket) => {
     });
 });
 
-const PORT = 3000;
 httpServer.listen(PORT, () => console.log(`Server listening on port ${PORT}`));

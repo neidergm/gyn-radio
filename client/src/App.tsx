@@ -8,8 +8,10 @@ import type { Transport } from 'mediasoup-client/types';
 import io, { Socket } from 'socket.io-client';
 import { FaHeadphones, FaBroadcastTower } from "react-icons/fa";
 
+const BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+
 // Definimos la conexión fuera para no reconectar en cada render
-const socket: Socket = io('http://localhost:3000');
+const socket: Socket = io(BASE_URL);
 
 // --- COMPONENTE DJ (PRODUCER) ---
 const DJView = () => {
