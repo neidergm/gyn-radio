@@ -2,11 +2,21 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import cors from 'cors';
-import * as mediasoup from "mediasoup";
-import type { types } from "mediasoup";
+import {
+    createWorker
+} from "mediasoup";
+import type {
+    Worker as MSWorker,
+    Router,
+    WebRtcTransport,
+    Producer,
+    Consumer,
+    DtlsState,
+    RouterRtpCodecCapability,
+} from "mediasoup/types";
 
 interface CustomSocket extends Socket {
-    transports: types.WebRtcTransport[];
+    transports: WebRtcTransport[];
 }
 
 const app = express();
@@ -25,12 +35,12 @@ const io = new Server(httpServer, {
 });
 
 // --- Configuración Mediasoup ---
-let worker: types.Worker;
-let router: types.Router;
-let producer: types.Producer; // Guardaremos aquí al único locutor de la radio
-let consumers: types.Consumer[] = []; // Lista de oyentes
+let worker: MSWorker;
+let router: Router;
+let producer: Producer; // Guardaremos aquí al único locutor de la radio
+let consumers: Consumer[] = []; // Lista de oyentes
 
-const mediaCodecs: types.RouterRtpCodecCapability[] = [
+const mediaCodecs: RouterRtpCodecCapability[] = [
     {
         kind: 'audio',
         mimeType: 'audio/opus',
@@ -40,7 +50,7 @@ const mediaCodecs: types.RouterRtpCodecCapability[] = [
 ];
 
 async function startMediasoup() {
-    worker = await mediasoup.createWorker();
+    worker = await createWorker();
 
     router = await worker.createRouter({ mediaCodecs });
     console.log('Mediasoup Worker y Router iniciados');
@@ -59,7 +69,7 @@ async function createWebRtcTransport(callback: (data: unknown) => void) {
         });
 
         // Eventos obligatorios del transporte
-        transport.on('dtlsstatechange', (dtlsState: types.DtlsState) => {
+        transport.on('dtlsstatechange', (dtlsState: DtlsState) => {
             if (dtlsState === 'closed') transport.close();
         });
 
